@@ -13,6 +13,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using NStack;
@@ -67,7 +68,7 @@ namespace Terminal.Gui {
 	///    if the terminal size changes.
 	/// </para>
 	/// <para>
-	///    Absolute layout requires specifying coordiantes and sizes of Views explicitly, and the
+	///    Absolute layout requires specifying coordinates and sizes of Views explicitly, and the
 	///    View will typcialy stay in a fixed position and size. To change the position and size use the
 	///    <see cref="Frame"/> property.
 	/// </para>
@@ -110,7 +111,7 @@ namespace Terminal.Gui {
 	///    frames for the vies that use <see cref="LayoutStyle.Computed"/>.
 	/// </para>
 	/// </remarks>
-	public partial class View : Responder, IEnumerable {
+	public partial class View : Responder, IEnumerable, ISupportInitializeNotification {
 
 		internal enum Direction {
 			Forward,
@@ -122,7 +123,17 @@ namespace Terminal.Gui {
 		View focused = null;
 		Direction focusDirection;
 
-		TextFormatter viewText;
+		TextFormatter textFormatter;
+
+		/// <summary>
+		/// Event fired when a subview is being added to this view.
+		/// </summary>
+		public Action<View> Added;
+
+		/// <summary>
+		/// Event fired when a subview is being removed from this view.
+		/// </summary>
+		public Action<View> Removed;
 
 		/// <summary>
 		/// Event fired when the view gets focus.
@@ -152,12 +163,12 @@ namespace Terminal.Gui {
 		/// <summary>
 		/// Gets or sets the HotKey defined for this view. A user pressing HotKey on the keyboard while this view has focus will cause the Clicked event to fire.
 		/// </summary>
-		public Key HotKey { get => viewText.HotKey; set => viewText.HotKey = value; }
+		public Key HotKey { get => textFormatter.HotKey; set => textFormatter.HotKey = value; }
 
 		/// <summary>
 		/// Gets or sets the specifier character for the hotkey (e.g. '_'). Set to '\xffff' to disable hotkey support for this View instance. The default is '\xffff'. 
 		/// </summary>
-		public Rune HotKeySpecifier { get => viewText.HotKeySpecifier; set => viewText.HotKeySpecifier = value; }
+		public Rune HotKeySpecifier { get => textFormatter.HotKeySpecifier; set => textFormatter.HotKeySpecifier = value; }
 
 		internal Direction FocusDirection {
 			get => SuperView?.FocusDirection ?? focusDirection;
@@ -189,6 +200,119 @@ namespace Terminal.Gui {
 		// Internally, we use InternalSubviews rather than subviews, as we do not expect us
 		// to make the same mistakes our users make when they poke at the Subviews.
 		internal IList<View> InternalSubviews => subviews ?? empty;
+
+		// This is null, and allocated on demand.
+		List<View> tabIndexes;
+
+		/// <summary>
+		/// This returns a tab index list of the subviews contained by this view.
+		/// </summary>
+		/// <value>The tabIndexes.</value>
+		public IList<View> TabIndexes => tabIndexes == null ? empty : tabIndexes.AsReadOnly ();
+
+		int tabIndex = -1;
+
+		/// <summary>
+		/// Indicates the index of the current <see cref="View"/> from the <see cref="TabIndexes"/> list.
+		/// </summary>
+		public int TabIndex {
+			get { return tabIndex; }
+			set {
+				if (!CanFocus) {
+					tabIndex = -1;
+					return;
+				} else if (SuperView?.tabIndexes == null || SuperView?.tabIndexes.Count == 1) {
+					tabIndex = 0;
+					return;
+				} else if (tabIndex == value) {
+					return;
+				}
+				tabIndex = value > SuperView.tabIndexes.Count - 1 ? SuperView.tabIndexes.Count - 1 : value < 0 ? 0 : value;
+				tabIndex = GetTabIndex (tabIndex);
+				if (SuperView.tabIndexes.IndexOf (this) != tabIndex) {
+					SuperView.tabIndexes.Remove (this);
+					SuperView.tabIndexes.Insert (tabIndex, this);
+					SetTabIndex ();
+				}
+			}
+		}
+
+		private int GetTabIndex (int idx)
+		{
+			int i = 0;
+			foreach (var v in SuperView.tabIndexes) {
+				if (v.tabIndex == -1 || v == this) {
+					continue;
+				}
+				i++;
+			}
+			return Math.Min (i, idx);
+		}
+
+		private void SetTabIndex ()
+		{
+			int i = 0;
+			foreach (var v in SuperView.tabIndexes) {
+				if (v.tabIndex == -1) {
+					continue;
+				}
+				v.tabIndex = i;
+				i++;
+			}
+		}
+
+		bool tabStop = true;
+
+		/// <summary>
+		/// This only be <c>true</c> if the <see cref="CanFocus"/> is also <c>true</c> and the focus can be avoided by setting this to <c>false</c>
+		/// </summary>
+		public bool TabStop {
+			get { return tabStop; }
+			set {
+				if (tabStop == value) {
+					return;
+				}
+				tabStop = CanFocus && value;
+			}
+		}
+
+		bool oldCanFocus;
+		int oldTabIndex;
+
+		/// <inheritdoc/>
+		public override bool CanFocus {
+			get => base.CanFocus;
+			set {
+				if (base.CanFocus != value) {
+					base.CanFocus = value;
+					if (!value && tabIndex > -1) {
+						TabIndex = -1;
+					}
+					if (value && SuperView != null && !SuperView.CanFocus) {
+						SuperView.CanFocus = value;
+					}
+					if (value && tabIndex == -1) {
+						TabIndex = SuperView != null ? SuperView.tabIndexes.IndexOf (this) : -1;
+					}
+					TabStop = value;
+				}
+				if (subviews != null && IsInitialized) {
+					foreach (var view in subviews) {
+						if (view.CanFocus != value) {
+							if (!value) {
+								view.oldCanFocus = view.CanFocus;
+								view.oldTabIndex = view.tabIndex;
+								view.CanFocus = value;
+								view.tabIndex = -1;
+							} else {
+								view.CanFocus = view.oldCanFocus;
+								view.tabIndex = view.oldTabIndex;
+							}
+						}
+					}
+				}
+			}
+		}
 
 		internal Rect NeedDisplay { get; private set; } = Rect.Empty;
 
@@ -381,7 +505,7 @@ namespace Terminal.Gui {
 		/// </remarks>
 		public View (Rect frame)
 		{
-			viewText = new TextFormatter ();
+			textFormatter = new TextFormatter ();
 			this.Text = ustring.Empty;
 
 			this.Frame = frame;
@@ -444,7 +568,7 @@ namespace Terminal.Gui {
 		/// <param name="text">text to initialize the <see cref="Text"/> property with.</param>
 		public View (Rect rect, ustring text) : this (rect)
 		{
-			viewText = new TextFormatter ();
+			textFormatter = new TextFormatter ();
 			this.Text = text;
 		}
 
@@ -464,10 +588,12 @@ namespace Terminal.Gui {
 		/// <param name="text">text to initialize the <see cref="Text"/> property with.</param>
 		public View (ustring text) : base ()
 		{
-			viewText = new TextFormatter ();
+			textFormatter = new TextFormatter ();
 			this.Text = text;
 
 			CanFocus = false;
+			TabIndex = -1;
+			TabStop = false;
 			LayoutStyle = LayoutStyle.Computed;
 			// BUGBUG: CalcRect doesn't account for line wrapping
 			var r = TextFormatter.CalcRect (0, 0, text);
@@ -495,7 +621,7 @@ namespace Terminal.Gui {
 			if (SuperView == null)
 				return;
 			SuperView.SetNeedsLayout ();
-			viewText.SetNeedsFormat ();
+			textFormatter.NeedsFormat = true;
 		}
 
 		/// <summary>
@@ -548,14 +674,25 @@ namespace Terminal.Gui {
 		{
 			if (view == null)
 				return;
-			if (subviews == null)
+			if (subviews == null) {
 				subviews = new List<View> ();
+			}
+			if (tabIndexes == null) {
+				tabIndexes = new List<View> ();
+			}
 			subviews.Add (view);
+			tabIndexes.Add (view);
 			view.container = this;
-			if (view.CanFocus)
+			if (view.CanFocus) {
 				CanFocus = true;
+				view.tabIndex = tabIndexes.IndexOf (view);
+			}
 			SetNeedsLayout ();
 			SetNeedsDisplay ();
+			OnAdded (view);
+			if (IsInitialized) {
+				view.BeginInit ();
+			}
 		}
 
 		/// <summary>
@@ -600,14 +737,19 @@ namespace Terminal.Gui {
 			SetNeedsDisplay ();
 			var touched = view.Frame;
 			subviews.Remove (view);
+			tabIndexes.Remove (view);
 			view.container = null;
-
-			if (subviews.Count < 1)
-				this.CanFocus = false;
-
+			view.tabIndex = -1;
+			if (subviews.Count < 1) {
+				CanFocus = false;
+			}
 			foreach (var v in subviews) {
 				if (v.Frame.IntersectsWith (touched))
 					view.SetNeedsDisplay ();
+			}
+			OnRemoved (view);
+			if (focused == view) {
+				focused = null;
 			}
 		}
 
@@ -884,37 +1026,46 @@ namespace Terminal.Gui {
 		///    in a visually sensible place.
 		public virtual void PositionCursor ()
 		{
-			if (focused != null)
+			if (!CanBeVisible (this)) {
+				return;
+			}
+
+			if (focused != null) {
 				focused.PositionCursor ();
-			else {
-				if (CanFocus && HasFocus) {
-					Move (viewText.HotKeyPos == -1 ? 1 : viewText.HotKeyPos, 0);
+			} else {
+				if (CanFocus && HasFocus && Visible) {
+					Move (textFormatter.HotKeyPos == -1 ? 0 : textFormatter.HotKeyPos, 0);
 				} else {
 					Move (frame.X, frame.Y);
 				}
 			}
 		}
 
+		bool hasFocus;
 		/// <inheritdoc/>
 		public override bool HasFocus {
 			get {
-				return base.HasFocus;
+				return hasFocus;
 			}
-			internal set {
-				if (base.HasFocus != value)
-					if (value)
-						OnEnter ();
-					else
-						OnLeave ();
-				SetNeedsDisplay ();
-				base.HasFocus = value;
+		}
 
-				// Remove focus down the chain of subviews if focus is removed
-				if (!value && focused != null) {
-					focused.OnLeave ();
-					focused.HasFocus = false;
-					focused = null;
+		void SetHasFocus (bool value, View view)
+		{
+			if (hasFocus != value) {
+				hasFocus = value;
+				if (value) {
+					OnEnter (view);
+				} else {
+					OnLeave (view);
 				}
+				SetNeedsDisplay ();
+			}
+
+			// Remove focus down the chain of subviews if focus is removed
+			if (!value && focused != null) {
+				focused.OnLeave (view);
+				focused.SetHasFocus (false, view);
+				focused = null;
 			}
 		}
 
@@ -925,35 +1076,58 @@ namespace Terminal.Gui {
 			/// <summary>
 			/// Constructs.
 			/// </summary>
-			public FocusEventArgs () { }
+			/// <param name="view">The view that gets or loses focus.</param>
+			public FocusEventArgs (View view) { View = view; }
 			/// <summary>
 			/// Indicates if the current focus event has already been processed and the driver should stop notifying any other event subscriber.
 			/// Its important to set this value to true specially when updating any View's layout from inside the subscriber method.
 			/// </summary>
 			public bool Handled { get; set; }
+			/// <summary>
+			/// Indicates the current view that gets or loses focus.
+			/// </summary>
+			public View View { get; set; }
+		}
+
+		/// <summary>
+		/// Method invoked  when a subview is being added to this view.
+		/// </summary>
+		/// <param name="view">The subview being added.</param>
+		public virtual void OnAdded (View view)
+		{
+			view.Added?.Invoke (this);
+		}
+
+		/// <summary>
+		/// Method invoked when a subview is being removed from this view.
+		/// </summary>
+		/// <param name="view">The subview being removed.</param>
+		public virtual void OnRemoved (View view)
+		{
+			view.Removed?.Invoke (this);
 		}
 
 		/// <inheritdoc/>
-		public override bool OnEnter ()
+		public override bool OnEnter (View view)
 		{
-			FocusEventArgs args = new FocusEventArgs ();
+			FocusEventArgs args = new FocusEventArgs (view);
 			Enter?.Invoke (args);
 			if (args.Handled)
 				return true;
-			if (base.OnEnter ())
+			if (base.OnEnter (view))
 				return true;
 
 			return false;
 		}
 
 		/// <inheritdoc/>
-		public override bool OnLeave ()
+		public override bool OnLeave (View view)
 		{
-			FocusEventArgs args = new FocusEventArgs ();
+			FocusEventArgs args = new FocusEventArgs (view);
 			Leave?.Invoke (args);
 			if (args.Handled)
 				return true;
-			if (base.OnLeave ())
+			if (base.OnLeave (view))
 				return true;
 
 			return false;
@@ -1032,7 +1206,7 @@ namespace Terminal.Gui {
 		/// </para>
 		/// <para>
 		///    Views should set the color that they want to use on entry, as otherwise this will inherit
-		///    the last color that was set globaly on the driver.
+		///    the last color that was set globally on the driver.
 		/// </para>
 		/// <para>
 		///    Overrides of <see cref="Redraw"/> must ensure they do not set <c>Driver.Clip</c> to a clip region
@@ -1041,15 +1215,22 @@ namespace Terminal.Gui {
 		/// </remarks>
 		public virtual void Redraw (Rect bounds)
 		{
+			if (!CanBeVisible (this)) {
+				return;
+			}
+
 			var clipRect = new Rect (Point.Empty, frame.Size);
 
-			Driver.SetAttribute (HasFocus ? ColorScheme.Focus : ColorScheme.Normal);
+			if (ColorScheme != null)
+				Driver.SetAttribute (HasFocus ? ColorScheme.Focus : ColorScheme.Normal);
 
 			if (!ustring.IsNullOrEmpty (Text)) {
 				Clear ();
 				// Draw any Text
-				viewText?.SetNeedsFormat ();
-				viewText?.Draw (ViewToScreen (Bounds), HasFocus ? ColorScheme.Focus : ColorScheme.Normal, HasFocus ? ColorScheme.HotFocus : ColorScheme.HotNormal);
+				if (textFormatter != null) {
+					textFormatter.NeedsFormat = true;
+				}
+				textFormatter?.Draw (ViewToScreen (Bounds), HasFocus ? ColorScheme.Focus : ColorScheme.Normal, HasFocus ? ColorScheme.HotFocus : ColorScheme.HotNormal);
 			}
 
 			// Invoke DrawContentEvent
@@ -1065,7 +1246,9 @@ namespace Terminal.Gui {
 
 							// Draw the subview
 							// Use the view's bounds (view-relative; Location will always be (0,0) because
-							view.Redraw (view.Bounds);
+							if (view.Visible) {
+								view.Redraw (view.Bounds);
+							}
 						}
 						view.NeedDisplay = Rect.Empty;
 						view.childNeedsDisplay = false;
@@ -1104,14 +1287,14 @@ namespace Terminal.Gui {
 		/// Causes the specified subview to have focus.
 		/// </summary>
 		/// <param name="view">View.</param>
-		public void SetFocus (View view)
+		void SetFocus (View view)
 		{
 			if (view == null)
 				return;
 			//Console.WriteLine ($"Request to focus {view}");
-			if (!view.CanFocus)
+			if (!view.CanFocus || !view.Visible)
 				return;
-			if (focused == view)
+			if (focused?.hasFocus == true && focused == view)
 				return;
 
 			// Make sure that this view is a subview
@@ -1123,13 +1306,26 @@ namespace Terminal.Gui {
 				throw new ArgumentException ("the specified view is not part of the hierarchy of this view");
 
 			if (focused != null)
-				focused.HasFocus = false;
+				focused.SetHasFocus (false, view);
 
+			var f = focused;
 			focused = view;
-			focused.HasFocus = true;
+			focused.SetHasFocus (true, f);
 			focused.EnsureFocus ();
 
 			// Send focus upwards
+			SuperView?.SetFocus (this);
+		}
+
+		/// <summary>
+		/// Causes the specified view and the entire parent hierarchy to have the focused order updated.
+		/// </summary>
+		public void SetFocus ()
+		{
+			if (!CanBeVisible (this)) {
+				return;
+			}
+
 			SuperView?.SetFocus (this);
 		}
 
@@ -1211,13 +1407,12 @@ namespace Terminal.Gui {
 		{
 			KeyEventEventArgs args = new KeyEventEventArgs (keyEvent);
 			KeyDown?.Invoke (args);
-			if (args.Handled)
+			if (args.Handled) {
 				return true;
-			if (subviews == null || subviews.Count == 0)
-				return false;
-			foreach (var view in subviews)
-				if (view.HasFocus && view.OnKeyDown (keyEvent))
-					return true;
+			}
+			if (Focused?.OnKeyDown (keyEvent) == true) {
+				return true;
+			}
 
 			return false;
 		}
@@ -1232,13 +1427,12 @@ namespace Terminal.Gui {
 		{
 			KeyEventEventArgs args = new KeyEventEventArgs (keyEvent);
 			KeyUp?.Invoke (args);
-			if (args.Handled)
+			if (args.Handled) {
 				return true;
-			if (subviews == null || subviews.Count == 0)
-				return false;
-			foreach (var view in subviews)
-				if (view.HasFocus && view.OnKeyUp (keyEvent))
-					return true;
+			}
+			if (Focused?.OnKeyUp (keyEvent) == true) {
+				return true;
+			}
 
 			return false;
 		}
@@ -1248,11 +1442,13 @@ namespace Terminal.Gui {
 		/// </summary>
 		public void EnsureFocus ()
 		{
-			if (focused == null)
-				if (FocusDirection == Direction.Forward)
+			if (focused == null && subviews?.Count > 0) {
+				if (FocusDirection == Direction.Forward) {
 					FocusFirst ();
-				else
+				} else {
 					FocusLast ();
+				}
+			}
 		}
 
 		/// <summary>
@@ -1260,13 +1456,17 @@ namespace Terminal.Gui {
 		/// </summary>
 		public void FocusFirst ()
 		{
-			if (subviews == null) {
+			if (!CanBeVisible (this)) {
+				return;
+			}
+
+			if (tabIndexes == null) {
 				SuperView?.SetFocus (this);
 				return;
 			}
 
-			foreach (var view in subviews) {
-				if (view.CanFocus) {
+			foreach (var view in tabIndexes) {
+				if (view.CanFocus && view.tabStop && view.Visible) {
 					SetFocus (view);
 					return;
 				}
@@ -1278,16 +1478,20 @@ namespace Terminal.Gui {
 		/// </summary>
 		public void FocusLast ()
 		{
-			if (subviews == null) {
+			if (!CanBeVisible (this)) {
+				return;
+			}
+
+			if (tabIndexes == null) {
 				SuperView?.SetFocus (this);
 				return;
 			}
 
-			for (int i = subviews.Count; i > 0;) {
+			for (int i = tabIndexes.Count; i > 0;) {
 				i--;
 
-				View v = subviews [i];
-				if (v.CanFocus) {
+				View v = tabIndexes [i];
+				if (v.CanFocus && v.tabStop && v.Visible) {
 					SetFocus (v);
 					return;
 				}
@@ -1300,8 +1504,12 @@ namespace Terminal.Gui {
 		/// <returns><c>true</c>, if previous was focused, <c>false</c> otherwise.</returns>
 		public bool FocusPrev ()
 		{
+			if (!CanBeVisible (this)) {
+				return false;
+			}
+
 			FocusDirection = Direction.Backward;
-			if (subviews == null || subviews.Count == 0)
+			if (tabIndexes == null || tabIndexes.Count == 0)
 				return false;
 
 			if (focused == null) {
@@ -1309,9 +1517,9 @@ namespace Terminal.Gui {
 				return focused != null;
 			}
 			int focused_idx = -1;
-			for (int i = subviews.Count; i > 0;) {
+			for (int i = tabIndexes.Count; i > 0;) {
 				i--;
-				View w = subviews [i];
+				View w = tabIndexes [i];
 
 				if (w.HasFocus) {
 					if (w.FocusPrev ())
@@ -1319,10 +1527,10 @@ namespace Terminal.Gui {
 					focused_idx = i;
 					continue;
 				}
-				if (w.CanFocus && focused_idx != -1) {
-					focused.HasFocus = false;
+				if (w.CanFocus && focused_idx != -1 && w.tabStop && w.Visible) {
+					focused.SetHasFocus (false, w);
 
-					if (w != null && w.CanFocus)
+					if (w != null && w.CanFocus && w.tabStop && w.Visible)
 						w.FocusLast ();
 
 					SetFocus (w);
@@ -1330,7 +1538,7 @@ namespace Terminal.Gui {
 				}
 			}
 			if (focused != null) {
-				focused.HasFocus = false;
+				focused.SetHasFocus (false, this);
 				focused = null;
 			}
 			return false;
@@ -1342,18 +1550,22 @@ namespace Terminal.Gui {
 		/// <returns><c>true</c>, if next was focused, <c>false</c> otherwise.</returns>
 		public bool FocusNext ()
 		{
+			if (!CanBeVisible (this)) {
+				return false;
+			}
+
 			FocusDirection = Direction.Forward;
-			if (subviews == null || subviews.Count == 0)
+			if (tabIndexes == null || tabIndexes.Count == 0)
 				return false;
 
 			if (focused == null) {
 				FocusFirst ();
 				return focused != null;
 			}
-			int n = subviews.Count;
+			int n = tabIndexes.Count;
 			int focused_idx = -1;
 			for (int i = 0; i < n; i++) {
-				View w = subviews [i];
+				View w = tabIndexes [i];
 
 				if (w.HasFocus) {
 					if (w.FocusNext ())
@@ -1361,10 +1573,10 @@ namespace Terminal.Gui {
 					focused_idx = i;
 					continue;
 				}
-				if (w.CanFocus && focused_idx != -1) {
-					focused.HasFocus = false;
+				if (w.CanFocus && focused_idx != -1 && w.tabStop && w.Visible) {
+					focused.SetHasFocus (false, w);
 
-					if (w != null && w.CanFocus)
+					if (w != null && w.CanFocus && w.tabStop && w.Visible)
 						w.FocusFirst ();
 
 					SetFocus (w);
@@ -1372,7 +1584,7 @@ namespace Terminal.Gui {
 				}
 			}
 			if (focused != null) {
-				focused.HasFocus = false;
+				focused.SetHasFocus (false, this);
 				focused = null;
 			}
 			return false;
@@ -1508,6 +1720,13 @@ namespace Terminal.Gui {
 		public Action<LayoutEventArgs> LayoutComplete;
 
 		/// <summary>
+		/// Event called only once when the <see cref="View"/> is being initialized for the first time.
+		/// Allows configurations and assignments to be performed before the <see cref="View"/> being shown.
+		/// This derived from <see cref="ISupportInitializeNotification"/> to allow notify all the views that are being initialized.
+		/// </summary>
+		public event EventHandler Initialized;
+
+		/// <summary>
 		/// Raises the <see cref="LayoutComplete"/> event. Called from  <see cref="LayoutSubviews"/> before all sub-views have been laid out.
 		/// </summary>
 		internal virtual void OnLayoutComplete (LayoutEventArgs args)
@@ -1531,7 +1750,7 @@ namespace Terminal.Gui {
 			Rect oldBounds = Bounds;
 			OnLayoutStarted (new LayoutEventArgs () { OldBounds = oldBounds });
 
-			viewText.Size = Bounds.Size;
+			textFormatter.Size = Bounds.Size;
 
 
 			// Sort out the dependencies of the X, Y, Width, Height properties
@@ -1592,9 +1811,12 @@ namespace Terminal.Gui {
 		/// </para>
 		/// </remarks>
 		public virtual ustring Text {
-			get => viewText.Text;
+			get => textFormatter.Text;
 			set {
-				viewText.Text = value;
+				textFormatter.Text = value;
+				if (textFormatter.Size != Bounds.Size && (width == null || Bounds.Width == 0 || height == null || Bounds.Height == 0)) {
+					Bounds = new Rect (Bounds.X, Bounds.Y, textFormatter.Size.Width, textFormatter.Size.Height);
+				}
 				SetNeedsDisplay ();
 			}
 		}
@@ -1604,12 +1826,18 @@ namespace Terminal.Gui {
 		/// </summary>
 		/// <value>The text alignment.</value>
 		public virtual TextAlignment TextAlignment {
-			get => viewText.Alignment;
+			get => textFormatter.Alignment;
 			set {
-				viewText.Alignment = value;
+				textFormatter.Alignment = value;
 				SetNeedsDisplay ();
 			}
 		}
+
+		/// <summary>
+		/// Get or sets if  the <see cref="View"/> was already initialized.
+		/// This derived from <see cref="ISupportInitializeNotification"/> to allow notify all the views that are being initialized.
+		/// </summary>
+		public bool IsInitialized { get; set; }
 
 		/// <summary>
 		/// Pretty prints the View
@@ -1643,6 +1871,10 @@ namespace Terminal.Gui {
 		/// <inheritdoc/>
 		public override bool OnMouseEnter (MouseEvent mouseEvent)
 		{
+			if (!CanBeVisible (this)) {
+				return false;
+			}
+
 			MouseEventArgs args = new MouseEventArgs (mouseEvent);
 			MouseEnter?.Invoke (args);
 			if (args.Handled)
@@ -1656,6 +1888,10 @@ namespace Terminal.Gui {
 		/// <inheritdoc/>
 		public override bool OnMouseLeave (MouseEvent mouseEvent)
 		{
+			if (!CanBeVisible (this)) {
+				return false;
+			}
+
 			MouseEventArgs args = new MouseEventArgs (mouseEvent);
 			MouseLeave?.Invoke (args);
 			if (args.Handled)
@@ -1673,6 +1909,10 @@ namespace Terminal.Gui {
 		/// <returns><c>true</c>, if the event was handled, <c>false</c> otherwise.</returns>
 		public virtual bool OnMouseEvent (MouseEvent mouseEvent)
 		{
+			if (!CanBeVisible (this)) {
+				return false;
+			}
+
 			MouseEventArgs args = new MouseEventArgs (mouseEvent);
 			MouseClick?.Invoke (args);
 			if (args.Handled)
@@ -1682,7 +1922,7 @@ namespace Terminal.Gui {
 
 
 			if (mouseEvent.Flags == MouseFlags.Button1Clicked) {
-				if (!HasFocus && SuperView != null) {
+				if (CanFocus && !HasFocus && SuperView != null) {
 					SuperView.SetFocus (this);
 					SetNeedsDisplay ();
 				}
@@ -1690,6 +1930,70 @@ namespace Terminal.Gui {
 				return true;
 			}
 			return false;
+		}
+
+		/// <inheritdoc/>
+		protected override void Dispose (bool disposing)
+		{
+			for (int i = InternalSubviews.Count - 1; i >= 0; i--) {
+				View subview = InternalSubviews [i];
+				Remove (subview);
+				subview.Dispose ();
+			}
+			base.Dispose (disposing);
+		}
+
+		/// <summary>
+		/// This derived from <see cref="ISupportInitializeNotification"/> to allow notify all the views that are beginning initialized.
+		/// </summary>
+		public void BeginInit ()
+		{
+			if (!IsInitialized) {
+				oldCanFocus = CanFocus;
+				oldTabIndex = tabIndex;
+				Initialized?.Invoke (this, EventArgs.Empty);
+			}
+			if (subviews?.Count > 0) {
+				foreach (var view in subviews) {
+					if (!view.IsInitialized) {
+						view.BeginInit ();
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// This derived from <see cref="ISupportInitializeNotification"/> to allow notify all the views that are ending initialized.
+		/// </summary>
+		public void EndInit ()
+		{
+			IsInitialized = true;
+			if (subviews?.Count > 0) {
+				foreach (var view in subviews) {
+					if (!view.IsInitialized) {
+						view.EndInit ();
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// Gets or sets the view visibility.
+		/// </summary>
+		public bool Visible { get; set; } = true;
+
+		bool CanBeVisible (View view)
+		{
+			if (!view.Visible) {
+				return false;
+			}
+			for (var c = view.SuperView; c != null; c = c.SuperView) {
+				if (!c.Visible) {
+					return false;
+				}
+			}
+
+			return true;
 		}
 	}
 }

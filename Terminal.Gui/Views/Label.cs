@@ -16,7 +16,7 @@ namespace Terminal.Gui {
 	/// The Label <see cref="View"/> displays a string at a given position and supports multiple lines separted by newline characters. Multi-line Labels support word wrap.
 	/// </summary>
 	/// <remarks>
-	/// The <see cref="Label"/> view is functionality identical to <see cref="View"/> and is included for API backwards compatibilty.
+	/// The <see cref="Label"/> view is functionality identical to <see cref="View"/> and is included for API backwards compatibility.
 	/// </remarks>
 	public class Label : View {
 		/// <inheritdoc/>
@@ -55,6 +55,21 @@ namespace Terminal.Gui {
 		/// </remarks>
 		public Action Clicked;
 
+		///// <inheritdoc/>
+		//public new ustring Text {
+		//	get => base.Text;
+		//	set {
+		//		base.Text = value;
+		//		// This supports Label auto-sizing when Text changes (preserving backwards compat behavior)
+		//		if (Frame.Height == 1 && !ustring.IsNullOrEmpty (value)) {
+		//			int w = Text.RuneCount;
+		//			Width = w;
+		//			Frame = new Rect (Frame.Location, new Size (w, Frame.Height));
+		//		}
+		//		SetNeedsDisplay ();
+		//	}
+		//}
+
 		/// <summary>
 		/// Method invoked when a mouse event is generated
 		/// </summary>
@@ -72,7 +87,7 @@ namespace Terminal.Gui {
 
 			if (mouseEvent.Flags == MouseFlags.Button1Clicked) {
 				if (!HasFocus && SuperView != null) {
-					SuperView.SetFocus (this);
+					SetFocus ();
 					SetNeedsDisplay ();
 				}
 

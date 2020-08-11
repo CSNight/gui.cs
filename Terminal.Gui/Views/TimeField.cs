@@ -77,10 +77,10 @@ namespace Terminal.Gui {
 			shortFormat = $" hh\\{sepChar}mm";
 			CursorPosition = 1;
 			Time = time;
-			TextChanged += TimeField_Changed;
+			TextChanged += TextField_TextChanged;
 		}
 
-		void TimeField_Changed (ustring e)
+		void TextField_TextChanged (ustring e)
 		{
 			try {
 				if (!TimeSpan.TryParseExact (Text.ToString ().Trim (), Format.Trim (), CultureInfo.CurrentCulture, TimeSpanStyles.None, out TimeSpan result))
@@ -275,7 +275,7 @@ namespace Terminal.Gui {
 			if (!ev.Flags.HasFlag (MouseFlags.Button1Clicked))
 				return false;
 			if (!HasFocus)
-				SuperView.SetFocus (this);
+				SetFocus ();
 
 			var point = ev.X;
 			if (point > FieldLen)

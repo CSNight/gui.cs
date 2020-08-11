@@ -56,6 +56,8 @@ namespace UICatalog {
 		private static StatusItem _capslock;
 		private static StatusItem _numlock;
 		private static StatusItem _scrolllock;
+		private static int _categoryListViewItem;
+		private static int _scenarioListViewItem;
 
 		private static Scenario _runningScenario = null;
 		private static bool _useSystemConsole = false;
@@ -78,17 +80,47 @@ namespace UICatalog {
 				return;
 			}
 
-			Scenario scenario = GetScenarioToRun ();
-			while (scenario != null) {
+			Scenario scenario;
+			while ((scenario = GetScenarioToRun ()) != null) {
+#if DEBUG_IDISPOSABLE
+				// Validate there are no outstanding Responder-based instances 
+				// after a sceanario was selected to run. This proves the main UI Catalog
+				// 'app' closed cleanly.
+				foreach (var inst in Responder.Instances) {
+					Debug.Assert (inst.WasDisposed);
+				}
+				Responder.Instances.Clear ();
+#endif
+
 				Application.UseSystemConsole = _useSystemConsole;
-				Application.Init ();
 				scenario.Init (Application.Top, _baseColorScheme);
 				scenario.Setup ();
 				scenario.Run ();
-				scenario = GetScenarioToRun ();
+				_top.Ready += () => {
+					_rightPane.SetFocus ();
+					_top.Ready = null;
+				};
+
+#if DEBUG_IDISPOSABLE
+				// After the scenario runs, validate all Responder-based instances
+				// were disposed. This proves the scenario 'app' closed cleanly.
+				foreach (var inst in Responder.Instances) {
+					Debug.Assert (inst.WasDisposed);
+				}
+				Responder.Instances.Clear();
+#endif
 			}
-			if (!_top.Running)
-				Application.Shutdown (true);
+
+			Application.Shutdown ();
+
+#if DEBUG_IDISPOSABLE
+			// This proves that when the user exited the UI Catalog app
+			// it cleaned up properly.
+			foreach (var inst in Responder.Instances) {
+				Debug.Assert (inst.WasDisposed);
+			}
+			Responder.Instances.Clear ();
+#endif
 		}
 
 		/// <summary>
@@ -100,28 +132,114 @@ namespace UICatalog {
 			Application.UseSystemConsole = false;
 			Application.Init ();
 
-			if (_menu == null) {
-				Setup ();
-			}
+			// Set this here because not initialized until driver is loaded
+			_baseColorScheme = Colors.Base;
 
+			StringBuilder aboutMessage = new StringBuilder ();
+			aboutMessage.AppendLine ("UI Catalog is a comprehensive sample library for Terminal.Gui");
+			aboutMessage.AppendLine (@"             _           ");
+			aboutMessage.AppendLine (@"  __ _ _   _(_)  ___ ___ ");
+			aboutMessage.AppendLine (@" / _` | | | | | / __/ __|");
+			aboutMessage.AppendLine (@"| (_| | |_| | || (__\__ \");
+			aboutMessage.AppendLine (@" \__, |\__,_|_(_)___|___/");
+			aboutMessage.AppendLine (@" |___/                   ");
+			aboutMessage.AppendLine ("");
+			aboutMessage.AppendLine ($"Version: {typeof (UICatalogApp).Assembly.GetName ().Version}");
+			aboutMessage.AppendLine ($"Using Terminal.Gui Version: {typeof (Terminal.Gui.Application).Assembly.GetName ().Version}");
+			aboutMessage.AppendLine ("");
+
+			_menu = new MenuBar (new MenuBarItem [] {
+				new MenuBarItem ("_File", new MenuItem [] {
+					new MenuItem ("_Quit", "", () => Application.RequestStop() )
+				}),
+				new MenuBarItem ("_Color Scheme", CreateColorSchemeMenuItems()),
+				new MenuBarItem ("_Diagostics", CreateDiagnosticMenuItems()),
+				new MenuBarItem ("_About...", "About this app", () =>  MessageBox.Query ("About UI Catalog", aboutMessage.ToString(), "_Ok")),
+			});
+
+			_leftPane = new FrameView ("Categories") {
+				X = 0,
+				Y = 1, // for menu
+				Width = 25,
+				Height = Dim.Fill (1),
+				CanFocus = false,
+			};
+
+
+			_categories = Scenario.GetAllCategories ().OrderBy (c => c).ToList ();
+			_categoryListView = new ListView (_categories) {
+				X = 0,
+				Y = 0,
+				Width = Dim.Fill (0),
+				Height = Dim.Fill (0),
+				AllowsMarking = false,
+				CanFocus = true,
+			};
+			_categoryListView.OpenSelectedItem += (a) => {
+				_rightPane.SetFocus ();
+			};
+			_categoryListView.SelectedItemChanged += CategoryListView_SelectedChanged;
+			_leftPane.Add (_categoryListView);
+
+			_rightPane = new FrameView ("Scenarios") {
+				X = 25,
+				Y = 1, // for menu
+				Width = Dim.Fill (),
+				Height = Dim.Fill (1),
+				CanFocus = true,
+
+			};
+
+			_nameColumnWidth = Scenario.ScenarioMetadata.GetName (_scenarios.OrderByDescending (t => Scenario.ScenarioMetadata.GetName (t).Length).FirstOrDefault ()).Length;
+
+			_scenarioListView = new ListView () {
+				X = 0,
+				Y = 0,
+				Width = Dim.Fill (0),
+				Height = Dim.Fill (0),
+				AllowsMarking = false,
+				CanFocus = true,
+			};
+
+			_scenarioListView.OpenSelectedItem += _scenarioListView_OpenSelectedItem;
+			_rightPane.Add (_scenarioListView);
+
+			_categoryListView.SelectedItem = _categoryListViewItem;
+			_categoryListView.OnSelectedChanged ();
+
+			_capslock = new StatusItem (Key.CharMask, "Caps", null);
+			_numlock = new StatusItem (Key.CharMask, "Num", null);
+			_scrolllock = new StatusItem (Key.CharMask, "Scroll", null);
+
+			_statusBar = new StatusBar (new StatusItem [] {
+				_capslock,
+				_numlock,
+				_scrolllock,
+				new StatusItem(Key.ControlQ, "~CTRL-Q~ Quit", () => {
+					if (_runningScenario is null){
+						// This causes GetScenarioToRun to return null
+						_runningScenario = null;
+						Application.RequestStop();
+					} else {
+						_runningScenario.RequestStop();
+					}
+				}),
+			});
+
+			SetColorScheme ();
 			_top = Application.Top;
-
 			_top.KeyDown += KeyDownHandler;
-
 			_top.Add (_menu);
 			_top.Add (_leftPane);
 			_top.Add (_rightPane);
 			_top.Add (_statusBar);
-
 			_top.Ready += () => {
 				if (_runningScenario != null) {
-					_top.SetFocus (_rightPane);
 					_runningScenario = null;
 				}
 			};
 
-			Application.Run (_top, false);
-			Application.Shutdown (false);
+			Application.Run (_top);
 			return _runningScenario;
 		}
 
@@ -190,105 +308,10 @@ namespace UICatalog {
 			return menuItems.ToArray ();
 		}
 
-		/// <summary>
-		/// Create all controls. This gets called once and the controls remain with their state between Sceanrio runs.
-		/// </summary>
-		private static void Setup ()
-		{
-			// Set this here because not initilzied until driver is loaded
-			_baseColorScheme = Colors.Base;
-
-			StringBuilder aboutMessage = new StringBuilder ();
-			aboutMessage.AppendLine ("UI Catalog is a comprehensive sample library for Terminal.Gui");
-			aboutMessage.AppendLine ("");
-			aboutMessage.AppendLine ($"Version: {typeof (UICatalogApp).Assembly.GetName ().Version}");
-			aboutMessage.AppendLine ($"Using Terminal.Gui Version: {typeof (Terminal.Gui.Application).Assembly.GetName ().Version}");
-			aboutMessage.AppendLine ("");
-
-			_menu = new MenuBar (new MenuBarItem [] {
-				new MenuBarItem ("_File", new MenuItem [] {
-					new MenuItem ("_Quit", "", () => Application.RequestStop() )
-				}),
-				new MenuBarItem ("_Color Scheme", CreateColorSchemeMenuItems()),
-				new MenuBarItem ("_Diagostics", CreateDiagnosticMenuItems()),
-				new MenuBarItem ("_About...", "About this app", () =>  MessageBox.Query ("About UI Catalog", aboutMessage.ToString(), "_Ok")),
-			});
-
-			_leftPane = new FrameView ("Categories") {
-				X = 0,
-				Y = 1, // for menu
-				Width = 25,
-				Height = Dim.Fill (1),
-				CanFocus = false,
-			};
-
-
-			_categories = Scenario.GetAllCategories ().OrderBy (c => c).ToList ();
-			_categoryListView = new ListView (_categories) {
-				X = 0,
-				Y = 0,
-				Width = Dim.Fill (0),
-				Height = Dim.Fill (0),
-				AllowsMarking = false,
-				CanFocus = true,
-			};
-			_categoryListView.OpenSelectedItem += (a) => {
-				_top.SetFocus (_rightPane);
-			};
-			_categoryListView.SelectedItemChanged += CategoryListView_SelectedChanged;
-			_leftPane.Add (_categoryListView);
-
-			_rightPane = new FrameView ("Scenarios") {
-				X = 25,
-				Y = 1, // for menu
-				Width = Dim.Fill (),
-				Height = Dim.Fill (1),
-				CanFocus = true,
-
-			};
-
-			_nameColumnWidth = Scenario.ScenarioMetadata.GetName (_scenarios.OrderByDescending (t => Scenario.ScenarioMetadata.GetName (t).Length).FirstOrDefault ()).Length;
-
-			_scenarioListView = new ListView () {
-				X = 0,
-				Y = 0,
-				Width = Dim.Fill (0),
-				Height = Dim.Fill (0),
-				AllowsMarking = false,
-				CanFocus = true,
-			};
-
-			_scenarioListView.OpenSelectedItem += _scenarioListView_OpenSelectedItem;
-			_rightPane.Add (_scenarioListView);
-
-			_categoryListView.SelectedItem = 0;
-			_categoryListView.OnSelectedChanged ();
-
-			_capslock = new StatusItem (Key.CharMask, "Caps", null);
-			_numlock = new StatusItem (Key.CharMask, "Num", null);
-			_scrolllock = new StatusItem (Key.CharMask, "Scroll", null);
-
-			_statusBar = new StatusBar (new StatusItem [] {
-				_capslock,
-				_numlock,
-				_scrolllock,
-				new StatusItem(Key.ControlQ, "~CTRL-Q~ Quit", () => {
-					if (_runningScenario is null){
-						// This causes GetScenarioToRun to return null
-						_runningScenario = null;
-						Application.RequestStop();
-					} else {
-						_runningScenario.RequestStop();
-					}
-				}),
-			});
-
-			SetColorScheme ();
-		}
-
 		private static void _scenarioListView_OpenSelectedItem (EventArgs e)
 		{
 			if (_runningScenario is null) {
+				_scenarioListViewItem = _scenarioListView.SelectedItem;
 				var source = _scenarioListView.Source as ScenarioListDataSource;
 				_runningScenario = (Scenario)Activator.CreateInstance (source.Scenarios [_scenarioListView.SelectedItem]);
 				Application.RequestStop ();
@@ -385,6 +408,10 @@ namespace UICatalog {
 
 		private static void CategoryListView_SelectedChanged (ListViewItemEventArgs e)
 		{
+			if (_categoryListViewItem != _categoryListView.SelectedItem) {
+				_scenarioListViewItem = 0;
+			}
+			_categoryListViewItem = _categoryListView.SelectedItem;
 			var item = _categories [_categoryListView.SelectedItem];
 			List<Type> newlist;
 			if (item.Equals ("All")) {
@@ -394,7 +421,8 @@ namespace UICatalog {
 				newlist = _scenarios.Where (t => Scenario.ScenarioCategory.GetCategories (t).Contains (item)).ToList ();
 			}
 			_scenarioListView.Source = new ScenarioListDataSource (newlist);
-			_scenarioListView.SelectedItem = 0;
+			_scenarioListView.SelectedItem = _scenarioListViewItem;
+
 		}
 	}
 }

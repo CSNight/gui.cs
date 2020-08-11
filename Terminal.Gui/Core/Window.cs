@@ -49,7 +49,7 @@ namespace Terminal.Gui {
 		/// <summary>
 		/// Initializes a new instance of the <see cref="Gui.Window"/> class with an optional title using <see cref="LayoutStyle.Absolute"/> positioning.
 		/// </summary>
-		/// <param name="frame">Superview-relatie rectangle specifying the location and size</param>
+		/// <param name="frame">Superview-relative rectangle specifying the location and size</param>
 		/// <param name="title">Title</param>
 		/// <remarks>
 		/// This constructor intitalizes a Window with a <see cref="LayoutStyle"/> of <see cref="LayoutStyle.Absolute"/>. Use constructors
@@ -81,7 +81,7 @@ namespace Terminal.Gui {
 		/// Initializes a new instance of the <see cref="Window"/> using <see cref="LayoutStyle.Absolute"/> positioning with the specified frame for its location, with the specified frame padding,
 		/// and an optional title.
 		/// </summary>
-		/// <param name="frame">Superview-relatie rectangle specifying the location and size</param>
+		/// <param name="frame">Superview-relative rectangle specifying the location and size</param>
 		/// <param name="padding">Number of characters to use for padding of the drawn frame.</param>
 		/// <param name="title">Title</param>
 		/// <remarks>
@@ -135,23 +135,28 @@ namespace Terminal.Gui {
 		public override void Add (View view)
 		{
 			contentView.Add (view);
-			if (view.CanFocus)
+			if (view.CanFocus) {
 				CanFocus = true;
+			}
+			AddMenuStatusBar (view);
 		}
 
 
 		/// <inheritdoc/>
 		public override void Remove (View view)
 		{
-			if (view == null)
+			if (view == null) {
 				return;
+			}
 
 			SetNeedsDisplay ();
 			var touched = view.Frame;
 			contentView.Remove (view);
 
-			if (contentView.InternalSubviews.Count < 1)
-				this.CanFocus = false;
+			if (contentView.InternalSubviews.Count < 1) {
+				CanFocus = false;
+			}
+			RemoveMenuStatusBar (view);
 		}
 
 		/// <inheritdoc/>
@@ -205,8 +210,21 @@ namespace Terminal.Gui {
 			// a pending mouse event activated.
 
 			int nx, ny;
-			if ((mouseEvent.Flags == (MouseFlags.Button1Pressed | MouseFlags.ReportMousePosition) ||
-				mouseEvent.Flags == MouseFlags.Button3Pressed)) {
+			if (!dragPosition.HasValue && mouseEvent.Flags == (MouseFlags.Button1Pressed)) {
+				// Only start grabbing if the user clicks on the title bar.
+				if (mouseEvent.Y == 0) {
+					start = new Point (mouseEvent.X, mouseEvent.Y);
+					dragPosition = new Point ();
+					nx = mouseEvent.X - mouseEvent.OfX;
+					ny = mouseEvent.Y - mouseEvent.OfY;
+					dragPosition = new Point (nx, ny);
+					Application.GrabMouse (this);
+				}
+
+				//Demo.ml2.Text = $"Starting at {dragPosition}";
+				return true;
+			} else if (mouseEvent.Flags == (MouseFlags.Button1Pressed | MouseFlags.ReportMousePosition) ||
+				mouseEvent.Flags == MouseFlags.Button3Pressed) {
 				if (dragPosition.HasValue) {
 					if (SuperView == null) {
 						Application.Top.SetNeedsDisplay (Frame);
@@ -217,8 +235,8 @@ namespace Terminal.Gui {
 					} else {
 						SuperView.SetNeedsDisplay (Frame);
 					}
-					EnsureVisibleBounds (this, mouseEvent.X + mouseEvent.OfX - start.X,
-						mouseEvent.Y + mouseEvent.OfY, out nx, out ny);
+					EnsureVisibleBounds (this, mouseEvent.X + (SuperView == null ? mouseEvent.OfX - start.X : Frame.X - start.X),
+						mouseEvent.Y + (SuperView == null ? mouseEvent.OfY : Frame.Y), out nx, out ny);
 
 					dragPosition = new Point (nx, ny);
 					Frame = new Rect (nx, ny, Frame.Width, Frame.Height);
@@ -228,19 +246,6 @@ namespace Terminal.Gui {
 
 					// FIXED: optimize, only SetNeedsDisplay on the before/after regions.
 					SetNeedsDisplay ();
-					return true;
-				} else {
-					// Only start grabbing if the user clicks on the title bar.
-					if (mouseEvent.Y == 0) {
-						start = new Point (mouseEvent.X, mouseEvent.Y);
-						dragPosition = new Point ();
-						nx = mouseEvent.X - mouseEvent.OfX;
-						ny = mouseEvent.Y - mouseEvent.OfY;
-						dragPosition = new Point (nx, ny);
-						Application.GrabMouse (this);
-					}
-
-					//Demo.ml2.Text = $"Starting at {dragPosition}";
 					return true;
 				}
 			}

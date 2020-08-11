@@ -12,6 +12,13 @@ using Console = Terminal.Gui.FakeConsole;
 
 namespace Terminal.Gui {
 	public class ApplicationTests {
+		public ApplicationTests ()
+		{
+#if DEBUG_IDISPOSABLE
+			Responder.Instances.Clear ();
+#endif
+		}
+
 		[Fact]
 		public void Init_Shutdown_Cleans_Up ()
 		{
@@ -32,7 +39,7 @@ namespace Terminal.Gui {
 			Assert.Equal (80, Application.Driver.Cols);
 			Assert.Equal (25, Application.Driver.Rows);
 
-			Application.Shutdown (true);
+			Application.Shutdown ();
 			Assert.Null (Application.Current);
 			Assert.Null (Application.CurrentView);
 			Assert.Null (Application.Top);
@@ -66,7 +73,7 @@ namespace Terminal.Gui {
 
 		void Shutdown ()
 		{
-			Application.Shutdown (true);
+			Application.Shutdown ();
 		}
 
 		[Fact]
@@ -82,15 +89,19 @@ namespace Terminal.Gui {
 			var rs = Application.Begin (top);
 			Assert.NotNull (rs);
 			Assert.Equal (top, Application.Current);
-			Application.End (rs, true);
+			Application.End (rs);
 
 			Assert.Null (Application.Current);
 			Assert.Null (Application.CurrentView);
+			Assert.NotNull (Application.Top);
+			Assert.NotNull (Application.MainLoop);
+			Assert.NotNull (Application.Driver);
+
+			Shutdown ();
+
 			Assert.Null (Application.Top);
 			Assert.Null (Application.MainLoop);
 			Assert.Null (Application.Driver);
-
-			Shutdown ();
 		}
 
 		[Fact]
@@ -108,9 +119,9 @@ namespace Terminal.Gui {
 				Application.RequestStop ();
 			};
 
-			Application.Run (top, true);
+			Application.Run (top);
 
-			Application.Shutdown (true);
+			Application.Shutdown ();
 			Assert.Null (Application.Current);
 			Assert.Null (Application.CurrentView);
 			Assert.Null (Application.Top);
@@ -133,9 +144,9 @@ namespace Terminal.Gui {
 				top.Running = false;
 			};
 
-			Application.Run (top, true);
+			Application.Run (top);
 
-			Application.Shutdown (true);
+			Application.Shutdown ();
 			Assert.Null (Application.Current);
 			Assert.Null (Application.CurrentView);
 			Assert.Null (Application.Top);
@@ -183,7 +194,7 @@ namespace Terminal.Gui {
 				keyUps++;
 			};
 
-			Application.Run (Application.Top, true);
+			Application.Run (Application.Top);
 
 			// Input string should match output
 			Assert.Equal (input, output);
@@ -194,7 +205,7 @@ namespace Terminal.Gui {
 			// # of key up events should match # of iterations
 			Assert.Equal (stackSize, iterations);
 
-			Application.Shutdown (true);
+			Application.Shutdown ();
 			Assert.Null (Application.Current);
 			Assert.Null (Application.CurrentView);
 			Assert.Null (Application.Top);

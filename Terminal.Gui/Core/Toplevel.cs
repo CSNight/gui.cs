@@ -15,7 +15,7 @@ namespace Terminal.Gui {
 	/// </summary>
 	/// <remarks>
 	///   <para>
-	///     Toplevels can be modally executing views, started by calling <see cref="Application.Run(Toplevel, bool)"/>. 
+	///     Toplevels can be modally executing views, started by calling <see cref="Application.Run(Toplevel)"/>. 
 	///     They return control to the caller when <see cref="Application.RequestStop()"/> has 
 	///     been called (which sets the <see cref="Toplevel.Running"/> property to false). 
 	///   </para>
@@ -23,7 +23,7 @@ namespace Terminal.Gui {
 	///     A Toplevel is created when an application initialzies Terminal.Gui by callling <see cref="Application.Init(ConsoleDriver, IMainLoopDriver)"/>.
 	///     The application Toplevel can be accessed via <see cref="Application.Top"/>. Additional Toplevels can be created 
 	///     and run (e.g. <see cref="Dialog"/>s. To run a Toplevel, create the <see cref="Toplevel"/> and 
-	///     call <see cref="Application.Run(Toplevel, bool)"/>.
+	///     call <see cref="Application.Run(Toplevel)"/>.
 	///   </para>
 	///   <para>
 	///     Toplevels can also opt-in to more sophisticated initialization
@@ -122,6 +122,42 @@ namespace Terminal.Gui {
 		public StatusBar StatusBar { get; set; }
 
 		///<inheritdoc/>
+		public override bool OnKeyDown (KeyEvent keyEvent)
+		{
+			if (base.OnKeyDown (keyEvent)) {
+				return true;
+			}
+
+			switch (keyEvent.Key) {
+			case Key.AltMask:
+				if (MenuBar != null && MenuBar.OnKeyDown (keyEvent)) {
+					return true;
+				}
+				break;
+			}
+
+			return false;
+		}
+
+		///<inheritdoc/>
+		public override bool OnKeyUp (KeyEvent keyEvent)
+		{
+			if (base.OnKeyUp (keyEvent)) {
+				return true;
+			}
+
+			switch (keyEvent.Key) {
+			case Key.AltMask:
+				if (MenuBar != null && MenuBar.OnKeyUp (keyEvent)) {
+					return true;
+				}
+				break;
+			}
+
+			return false;
+		}
+
+		///<inheritdoc/>
 		public override bool ProcessKey (KeyEvent keyEvent)
 		{
 			if (base.ProcessKey (keyEvent))
@@ -217,22 +253,26 @@ namespace Terminal.Gui {
 		public override void Add (View view)
 		{
 			if (this == Application.Top) {
-				if (view is MenuBar)
-					MenuBar = view as MenuBar;
-				if (view is StatusBar)
-					StatusBar = view as StatusBar;
+				AddMenuStatusBar (view);
 			}
 			base.Add (view);
+		}
+
+		internal void AddMenuStatusBar (View view)
+		{
+			if (view is MenuBar) {
+				MenuBar = view as MenuBar;
+			}
+			if (view is StatusBar) {
+				StatusBar = view as StatusBar;
+			}
 		}
 
 		///<inheritdoc/>
 		public override void Remove (View view)
 		{
-			if (this == Application.Top) {
-				if (view is MenuBar)
-					MenuBar = null;
-				if (view is StatusBar)
-					StatusBar = null;
+			if (this is Toplevel toplevel && toplevel.MenuBar != null) {
+				RemoveMenuStatusBar (view);
 			}
 			base.Remove (view);
 		}
@@ -241,10 +281,24 @@ namespace Terminal.Gui {
 		public override void RemoveAll ()
 		{
 			if (this == Application.Top) {
+				MenuBar?.Dispose ();
 				MenuBar = null;
+				StatusBar?.Dispose ();
 				StatusBar = null;
 			}
 			base.RemoveAll ();
+		}
+
+		internal void RemoveMenuStatusBar (View view)
+		{
+			if (view is MenuBar) {
+				MenuBar?.Dispose ();
+				MenuBar = null;
+			}
+			if (view is StatusBar) {
+				StatusBar?.Dispose ();
+				StatusBar = null;
+			}
 		}
 
 		internal void EnsureVisibleBounds (Toplevel top, int x, int y, out int nx, out int ny)
@@ -252,23 +306,35 @@ namespace Terminal.Gui {
 			nx = Math.Max (x, 0);
 			nx = nx + top.Frame.Width > Driver.Cols ? Math.Max (Driver.Cols - top.Frame.Width, 0) : nx;
 			bool m, s;
-			if (SuperView == null || SuperView.GetType () != typeof (Toplevel))
+			if (SuperView == null || SuperView.GetType () != typeof (Toplevel)) {
 				m = Application.Top.MenuBar != null;
-			else
+			} else {
 				m = ((Toplevel)SuperView).MenuBar != null;
-			int l = m ? 1 : 0;
+			}
+			int l;
+			if (SuperView == null || SuperView is Toplevel) {
+				l = m ? 1 : 0;
+			} else {
+				l = 0;
+			}
 			ny = Math.Max (y, l);
-			if (SuperView == null || SuperView.GetType () != typeof (Toplevel))
+			if (SuperView == null || SuperView.GetType () != typeof (Toplevel)) {
 				s = Application.Top.StatusBar != null;
-			else
+			} else {
 				s = ((Toplevel)SuperView).StatusBar != null;
-			l = s ? Driver.Rows - 1 : Driver.Rows;
+			}
+			if (SuperView == null || SuperView is Toplevel) {
+				l = s ? Driver.Rows - 1 : Driver.Rows;
+			} else {
+				l = s ? SuperView.Frame.Height - 1 : SuperView.Frame.Height;
+			}
 			ny = Math.Min (ny, l);
 			ny = ny + top.Frame.Height > l ? Math.Max (l - top.Frame.Height, m ? 1 : 0) : ny;
 		}
 
 		internal void PositionToplevels ()
 		{
+			PositionToplevel (this);
 			foreach (var top in Subviews) {
 				if (top is Toplevel) {
 					PositionToplevel ((Toplevel)top);
@@ -279,19 +345,24 @@ namespace Terminal.Gui {
 		private void PositionToplevel (Toplevel top)
 		{
 			EnsureVisibleBounds (top, top.Frame.X, top.Frame.Y, out int nx, out int ny);
-			if ((nx != top.Frame.X || ny != top.Frame.Y) && top.LayoutStyle != LayoutStyle.Computed) {
-				top.X = nx;
-				top.Y = ny;
+			if ((nx != top.Frame.X || ny != top.Frame.Y) && top.LayoutStyle == LayoutStyle.Computed) {
+				if (top.X is Pos.PosAbsolute && top.Bounds.X != nx) {
+					top.X = nx;
+				}
+				if (top.Y is Pos.PosAbsolute && top.Bounds.Y != ny) {
+					top.Y = ny;
+				}
 			}
-			if (StatusBar != null) {
-				if (ny + top.Frame.Height > Driver.Rows - 1) {
+			if (top.StatusBar != null) {
+				if (ny + top.Frame.Height > top.Frame.Height - 1) {
 					if (top.Height is Dim.DimFill)
 						top.Height = Dim.Fill () - 1;
 				}
-				if (StatusBar.Frame.Y != Driver.Rows - 1) {
-					StatusBar.Y = Driver.Rows - 1;
-					SetNeedsDisplay ();
+				if (top.StatusBar.Frame.Y != top.Frame.Height - 1) {
+					top.StatusBar.Y = top.Frame.Height - 1;
+					top.LayoutSubviews ();
 				}
+				top.BringSubviewToFront (top.StatusBar);
 			}
 		}
 
@@ -324,7 +395,7 @@ namespace Terminal.Gui {
 		}
 
 		/// <summary>
-		/// Invoked by <see cref="Application.Begin"/> as part of the <see cref="Application.Run(Toplevel, bool)"/> after
+		/// Invoked by <see cref="Application.Begin"/> as part of the <see cref="Application.Run(Toplevel)"/> after
 		/// the views have been laid out, and before the views are drawn for the first time.
 		/// </summary>
 		public virtual void WillPresent ()

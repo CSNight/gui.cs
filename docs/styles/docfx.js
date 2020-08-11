@@ -422,6 +422,8 @@ $(function () {
       $('#toc a.active').parents('li').each(function (i, e) {
         $(e).addClass(active).addClass(expanded);
         $(e).children('a').addClass(active);
+      })
+      $('#toc a.active').parents('li').each(function (i, e) {
         top += $(e).position().top;
       })
       $('.sidetoc').scrollTop(top - 50);
@@ -1051,7 +1053,7 @@ $(function () {
     function getAbsolutePath(href) {
       // Use anchor to normalize href
       var anchor = $('<a href="' + href + '"></a>')[0];
-      // Ignore protocal, remove search and query
+      // Ignore protocol, remove search and query
       return anchor.host + anchor.pathname;
     }
 

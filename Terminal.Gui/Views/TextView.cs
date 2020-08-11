@@ -301,7 +301,7 @@ namespace Terminal.Gui {
 		public Action Changed;
 #endif
 		/// <summary>
-		///   Initalizes a <see cref="TextView"/> on the specified area, with absolute position and size.
+		///   Initializes a <see cref="TextView"/> on the specified area, with absolute position and size.
 		/// </summary>
 		/// <remarks>
 		/// </remarks>
@@ -311,7 +311,7 @@ namespace Terminal.Gui {
 		}
 
 		/// <summary>
-		///   Initalizes a <see cref="TextView"/> on the specified area, 
+		///   Initializes a <see cref="TextView"/> on the specified area, 
 		///   with dimensions controlled with the X, Y, Width and Height properties.
 		/// </summary>
 		public TextView () : base ()
@@ -565,7 +565,7 @@ namespace Terminal.Gui {
 
 		///<inheritdoc/>
 		public override bool CanFocus {
-			get => true;
+			get => base.CanFocus;
 			set { base.CanFocus = value; }
 		}
 
@@ -1199,8 +1199,13 @@ namespace Terminal.Gui {
 				return false;
 			}
 
-			if (!HasFocus)
-				SuperView.SetFocus (this);
+			if (!CanFocus) {
+				return true;
+			}
+
+			if (!HasFocus) {
+				SetFocus ();
+			}
 
 			if (ev.Flags == MouseFlags.Button1Clicked) {
 				if (model.Count > 0) {

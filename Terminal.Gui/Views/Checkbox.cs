@@ -147,10 +147,10 @@ namespace Terminal.Gui {
 		///<inheritdoc/>
 		public override bool MouseEvent (MouseEvent me)
 		{
-			if (!me.Flags.HasFlag (MouseFlags.Button1Clicked))
+			if (!me.Flags.HasFlag (MouseFlags.Button1Clicked) || !CanFocus)
 				return false;
 
-			SuperView.SetFocus (this);
+			SetFocus ();
 			var previousChecked = Checked;
 			Checked = !Checked;
 			OnToggled (previousChecked);

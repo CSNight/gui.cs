@@ -120,6 +120,7 @@ namespace Terminal.Gui {
 				source = value;
 				top = 0;
 				selected = 0;
+				lastSelectedItem = -1;
 				SetNeedsDisplay ();
 			}
 		}
@@ -205,15 +206,12 @@ namespace Terminal.Gui {
 		public int SelectedItem {
 			get => selected;
 			set {
-				if (source == null)
+				if (source == null || source.Count == 0)
 					return;
 				if (selected < 0 || selected >= source.Count)
 					throw new ArgumentException ("value");
 				selected = value;
-				if (selected < top)
-					top = selected;
-				else if (selected >= top + Frame.Height)
-					top = selected;
+				OnSelectedChanged ();
 			}
 		}
 
@@ -240,8 +238,8 @@ namespace Terminal.Gui {
 		/// the "Source" property to reset the internal settings of the ListView.</param>
 		public ListView (IListDataSource source) : base ()
 		{
-			Source = source;
-			CanFocus = true;
+			this.source = source;
+			Initialize ();
 		}
 
 		/// <summary>
@@ -249,6 +247,7 @@ namespace Terminal.Gui {
 		/// </summary>
 		public ListView () : base ()
 		{
+			Initialize ();
 		}
 
 		/// <summary>
@@ -258,6 +257,7 @@ namespace Terminal.Gui {
 		/// <param name="source">An IList data source, if the elements of the IList are strings or ustrings, the string is rendered, otherwise the ToString() method is invoked on the result.</param>
 		public ListView (Rect rect, IList source) : this (rect, MakeWrapper (source))
 		{
+			Initialize ();
 		}
 
 		/// <summary>
@@ -266,6 +266,12 @@ namespace Terminal.Gui {
 		/// <param name="rect">Frame for the listview.</param>
 		/// <param name="source">IListDataSource object that provides a mechanism to render the data. The number of elements on the collection should not change, if you must change, set the "Source" property to reset the internal settings of the ListView.</param>
 		public ListView (Rect rect, IListDataSource source) : base (rect)
+		{
+			this.source = source;
+			Initialize ();
+		}
+
+		void Initialize ()
 		{
 			Source = source;
 			CanFocus = true;
@@ -278,6 +284,11 @@ namespace Terminal.Gui {
 			Driver.SetAttribute (current);
 			Move (0, 0);
 			var f = Frame;
+			if (selected < top) {
+				top = selected;
+			} else if (selected >= top + f.Height) {
+				top = selected;
+			}
 			var item = top;
 			bool focused = HasFocus;
 			int col = allowsMarking ? 4 : 0;
@@ -443,6 +454,9 @@ namespace Terminal.Gui {
 					top++;
 				OnSelectedChanged ();
 				SetNeedsDisplay ();
+			} else if (lastSelectedItem == -1) {
+				OnSelectedChanged ();
+				SetNeedsDisplay ();
 			}
 
 			return true;
@@ -506,7 +520,7 @@ namespace Terminal.Gui {
 		public virtual bool OnSelectedChanged ()
 		{
 			if (selected != lastSelectedItem) {
-				var value = source.ToList () [selected];
+				var value = source?.Count > 0 ? source.ToList () [selected] : null;
 				SelectedItemChanged?.Invoke (new ListViewItemEventArgs (selected, value));
 				lastSelectedItem = selected;
 				return true;
@@ -528,6 +542,28 @@ namespace Terminal.Gui {
 		}
 
 		///<inheritdoc/>
+		public override bool OnEnter (View view)
+		{
+			if (lastSelectedItem == -1) {
+				OnSelectedChanged ();
+				return true;
+			}
+
+			return false;
+		}
+
+		///<inheritdoc/>
+		public override bool OnLeave (View view)
+		{
+			if (lastSelectedItem > -1) {
+				lastSelectedItem = -1;
+				return true;
+			}
+
+			return false;
+		}
+
+		///<inheritdoc/>
 		public override void PositionCursor ()
 		{
 			if (allowsMarking)
@@ -543,11 +579,13 @@ namespace Terminal.Gui {
 				me.Flags != MouseFlags.WheeledDown && me.Flags != MouseFlags.WheeledUp)
 				return false;
 
-			if (!HasFocus)
-				SuperView.SetFocus (this);
+			if (!HasFocus && CanFocus) {
+				SetFocus ();
+			}
 
-			if (source == null)
+			if (source == null) {
 				return false;
+			}
 
 			if (me.Flags == MouseFlags.WheeledDown) {
 				MoveDown ();
@@ -557,8 +595,9 @@ namespace Terminal.Gui {
 				return true;
 			}
 
-			if (me.Y + top >= source.Count)
+			if (me.Y + top >= source.Count) {
 				return true;
+			}
 
 			selected = top + me.Y;
 			if (AllowsAll ()) {
@@ -568,8 +607,10 @@ namespace Terminal.Gui {
 			}
 			OnSelectedChanged ();
 			SetNeedsDisplay ();
-			if (me.Flags == MouseFlags.Button1DoubleClicked)
+			if (me.Flags == MouseFlags.Button1DoubleClicked) {
 				OnOpenSelectedItem ();
+			}
+
 			return true;
 		}
 	}

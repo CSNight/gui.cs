@@ -44,27 +44,49 @@ namespace Terminal.Gui {
 			return false;
 		}
 
-		internal void Reload ()
+		internal bool Reload (ustring value = null)
 		{
-			dirInfo = new DirectoryInfo (directory.ToString ());
-			infos = (from x in dirInfo.GetFileSystemInfos ()
-				 where IsAllowed (x)
-				 orderby (!x.Attributes.HasFlag (FileAttributes.Directory)) + x.Name
-				 select (x.Name, x.Attributes.HasFlag (FileAttributes.Directory), false)).ToList ();
-			infos.Insert (0, ("..", true, false));
-			top = 0;
-			selected = 0;
-			SetNeedsDisplay ();
+			bool valid = false;
+			try {
+				dirInfo = new DirectoryInfo (value == null ? directory.ToString () : value.ToString ());
+				infos = (from x in dirInfo.GetFileSystemInfos ()
+					 where IsAllowed (x) && (!canChooseFiles ? x.Attributes.HasFlag (FileAttributes.Directory) : true)
+					 orderby (!x.Attributes.HasFlag (FileAttributes.Directory)) + x.Name
+					 select (x.Name, x.Attributes.HasFlag (FileAttributes.Directory), false)).ToList ();
+				infos.Insert (0, ("..", true, false));
+				top = 0;
+				selected = 0;
+				valid = true;
+			} catch (Exception ex) {
+				switch (ex) {
+				case DirectoryNotFoundException _:
+				case ArgumentException _:
+					dirInfo = null;
+					infos.Clear ();
+					valid = true;
+					break;
+				default:
+					valid = false;
+					break;
+				}
+			} finally {
+				if (valid) {
+					SetNeedsDisplay ();
+				}
+			}
+			return valid;
 		}
 
 		ustring directory;
 		public ustring Directory {
 			get => directory;
 			set {
-				if (directory == value)
+				if (directory == value) {
 					return;
-				directory = value;
-				Reload ();
+				}
+				if (Reload (value)) {
+					directory = value;
+				}
 			}
 		}
 
@@ -82,7 +104,7 @@ namespace Terminal.Gui {
 				return false;
 
 			if (!HasFocus)
-				SuperView.SetFocus (this);
+				SetFocus ();
 
 			if (infos == null)
 				return false;
@@ -95,10 +117,11 @@ namespace Terminal.Gui {
 			switch (me.Flags) {
 			case MouseFlags.Button1Clicked:
 				SetSelected (me);
-				SelectionChanged ();
+				OnSelectionChanged ();
 				SetNeedsDisplay ();
 				break;
 			case MouseFlags.Button1DoubleClicked:
+				UnMarkAll ();
 				SetSelected (me);
 				if (ExecuteSelection ()) {
 					host.canceled = false;
@@ -143,6 +166,17 @@ namespace Terminal.Gui {
 			}
 
 			return true;
+		}
+
+		private void UnMarkAll ()
+		{
+			if (allowsMultipleSelection && infos.Count > 0) {
+				for (int i = 0; i < infos.Count; i++) {
+					if (infos [i].Item3) {
+						infos [i] = (infos [i].Item1, infos [i].Item2, false);
+					}
+				}
+			}
 		}
 
 		void SetSelected (MouseEvent me)
@@ -216,15 +250,17 @@ namespace Terminal.Gui {
 		public Action<ustring> DirectoryChanged { get; set; }
 		public Action<ustring> FileChanged { get; set; }
 
-		void SelectionChanged ()
+		void OnSelectionChanged ()
 		{
-			if (FilePaths.Count > 0)
-				FileChanged?.Invoke (string.Join (", ", GetFilesName (FilePaths)));
-			else
-				FileChanged?.Invoke (infos [selected].Item2 ? "" : Path.GetFileName (infos [selected].Item1));
-			if (SelectedChanged != null) {
+			if (allowsMultipleSelection) {
+				if (FilePaths.Count > 0) {
+					FileChanged?.Invoke (string.Join (", ", GetFilesName (FilePaths)));
+				} else {
+					FileChanged?.Invoke (infos [selected].Item2 && !canChooseDirectories ? "" : Path.GetFileName (infos [selected].Item1));
+				}
+			} else {
 				var sel = infos [selected];
-				SelectedChanged ((sel.Item1, sel.Item2));
+				SelectedChanged?.Invoke ((sel.Item1, sel.Item2));
 			}
 		}
 
@@ -263,13 +299,14 @@ namespace Terminal.Gui {
 						top = selected;
 					else
 						top = 0;
-					SelectionChanged ();
+					OnSelectionChanged ();
 
 					SetNeedsDisplay ();
 				}
 				return true;
 
 			case Key.Enter:
+				UnMarkAll ();
 				if (ExecuteSelection ())
 					return false;
 				else
@@ -282,7 +319,7 @@ namespace Terminal.Gui {
 				if (n != selected) {
 					selected = n;
 					top = selected;
-					SelectionChanged ();
+					OnSelectionChanged ();
 					SetNeedsDisplay ();
 				}
 				return true;
@@ -307,7 +344,7 @@ namespace Terminal.Gui {
 		{
 			selected = infos.Count - 1;
 			top = infos.Count () - 1;
-			SelectionChanged ();
+			OnSelectionChanged ();
 			SetNeedsDisplay ();
 		}
 
@@ -315,7 +352,7 @@ namespace Terminal.Gui {
 		{
 			selected = 0;
 			top = 0;
-			SelectionChanged ();
+			OnSelectionChanged ();
 			SetNeedsDisplay ();
 		}
 
@@ -325,7 +362,7 @@ namespace Terminal.Gui {
 				selected++;
 				if (selected >= top + Frame.Height)
 					top++;
-				SelectionChanged ();
+				OnSelectionChanged ();
 				SetNeedsDisplay ();
 			}
 		}
@@ -336,13 +373,16 @@ namespace Terminal.Gui {
 				selected--;
 				if (selected < top)
 					top = selected;
-				SelectionChanged ();
+				OnSelectionChanged ();
 				SetNeedsDisplay ();
 			}
 		}
 
 		internal bool ExecuteSelection ()
 		{
+			if (infos.Count == 0) {
+				return false;
+			}
 			var isDir = infos [selected].Item2;
 
 			if (isDir) {
@@ -374,7 +414,7 @@ namespace Terminal.Gui {
 						infos [i] = (infos [i].Item1, infos [i].Item2, !infos [i].Item3);
 					}
 				}
-				SelectionChanged ();
+				OnSelectionChanged ();
 				SetNeedsDisplay ();
 			}
 		}
@@ -390,25 +430,36 @@ namespace Terminal.Gui {
 
 		public string MakePath (string relativePath)
 		{
-			return Path.GetFullPath (Path.Combine (Directory.ToString (), relativePath));
+			var dir = Directory.ToString ();
+			return string.IsNullOrEmpty (dir) ? "" : Path.GetFullPath (Path.Combine (dir, relativePath));
 		}
 
 		public IReadOnlyList<string> FilePaths {
 			get {
 				if (allowsMultipleSelection) {
 					var res = new List<string> ();
-					foreach (var item in infos)
+					foreach (var item in infos) {
 						if (item.Item3)
 							res.Add (MakePath (item.Item1));
+					}
+					if (res.Count == 0 && infos.Count > 0 && infos [selected].Item1 != "..") {
+						res.Add (MakePath (infos [selected].Item1));
+					}
 					return res;
 				} else {
+					if (infos.Count == 0) {
+						return null;
+					}
 					if (infos [selected].Item2) {
-						if (canChooseDirectories)
-							return new List<string> () { MakePath (infos [selected].Item1) };
+						if (canChooseDirectories) {
+							var sel = infos [selected].Item1;
+							return sel == ".." ? new List<string> () : new List<string> () { MakePath (infos [selected].Item1) };
+						}
 						return Array.Empty<string> ();
 					} else {
-						if (canChooseFiles)
+						if (canChooseFiles) {
 							return new List<string> () { MakePath (infos [selected].Item1) };
+						}
 						return Array.Empty<string> ();
 					}
 				}
@@ -439,7 +490,11 @@ namespace Terminal.Gui {
 		/// <param name="message">The message.</param>
 		public FileDialog (ustring title, ustring prompt, ustring nameFieldLabel, ustring message) : base (title)//, Driver.Cols - 20, Driver.Rows - 5, null)
 		{
-			this.message = new Label (Rect.Empty, "MESSAGE" + message);
+			this.message = new Label (message) { 
+				X = 1,
+				Y = 0,
+			};
+			Add (this.message);
 			var msgLines = TextFormatter.MaxLines (message, Driver.Cols - 20);
 
 			dirLabel = new Label ("Directory: ") {
@@ -450,7 +505,11 @@ namespace Terminal.Gui {
 			dirEntry = new TextField ("") {
 				X = Pos.Right (dirLabel),
 				Y = 1 + msgLines,
-				Width = Dim.Fill () - 1
+				Width = Dim.Fill () - 1,
+				TextChanged = (e) => {
+					DirectoryPath = dirEntry.Text;
+					nameEntry.Text = ustring.Empty;
+				}
 			};
 			Add (dirLabel, dirEntry);
 
@@ -473,9 +532,9 @@ namespace Terminal.Gui {
 			};
 			DirectoryPath = Path.GetFullPath (Environment.CurrentDirectory);
 			Add (dirListView);
-			dirListView.DirectoryChanged = (dir) => dirEntry.Text = dir;
-			dirListView.FileChanged = (file) => nameEntry.Text = file;
-
+			dirListView.DirectoryChanged = (dir) => { nameEntry.Text = ustring.Empty; dirEntry.Text = dir; };
+			dirListView.FileChanged = (file) => nameEntry.Text = file == ".." ? "" : file;
+			dirListView.SelectedChanged = (file) => nameEntry.Text = file.Item1 == ".." ? "" : file.Item1;
 			this.cancel = new Button ("Cancel");
 			this.cancel.Clicked += () => {
 				canceled = true;
@@ -487,7 +546,6 @@ namespace Terminal.Gui {
 				IsDefault = true,
 			};
 			this.prompt.Clicked += () => {
-				dirListView.ExecuteSelection ();
 				canceled = false;
 				Application.RequestStop ();
 			};
@@ -508,6 +566,12 @@ namespace Terminal.Gui {
 			base.WillPresent ();
 			//SetFocus (nameEntry);
 		}
+
+		//protected override void Dispose (bool disposing)
+		//{
+		//	message?.Dispose ();
+		//	base.Dispose (disposing);
+		//}
 
 		/// <summary>
 		/// Gets or sets the prompt label for the <see cref="Button"/> displayed to the user
